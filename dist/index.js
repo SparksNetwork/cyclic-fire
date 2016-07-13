@@ -7,7 +7,19 @@ exports.makeQueueDriver = exports.makeFirebaseDriver = exports.makeAuthDriver = 
 
 var _typeof = typeof Symbol === "function" && typeof Symbol.iterator === "symbol" ? function (obj) { return typeof obj; } : function (obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol ? "symbol" : typeof obj; };
 
-var _rx = require('rx');
+var _xstream = require('xstream');
+
+var _xstream2 = _interopRequireDefault(_xstream);
+
+var _dropRepeats = require('xstream/extra/dropRepeats');
+
+var _dropRepeats2 = _interopRequireDefault(_dropRepeats);
+
+var _xstreamAdapter = require('@cycle/xstream-adapter');
+
+var _xstreamAdapter2 = _interopRequireDefault(_xstreamAdapter);
+
+function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
 function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
 
@@ -18,21 +30,29 @@ var LOGOUT = exports.LOGOUT = 'logout';
 // streams used in drivers
 
 var FirebaseStream = function FirebaseStream(ref, evtName) {
-  return _rx.Observable.create(function (obs) {
-    return ref.on(evtName, function (snap) {
-      return obs.onNext(snap);
-    });
+  return _xstream2.default.create({
+    start: function start(obs) {
+      return ref.on(evtName, function (snap) {
+        return obs.next(snap);
+      });
+    },
+    stop: function stop() {
+      return ref.off(evtName);
+    }
   }).map(function (snap) {
-    return { key: snap.key(), val: snap.val() };
-  }).distinctUntilChanged();
+    return { key: snap.key, val: snap.val() };
+  }).compose((0, _dropRepeats2.default)());
 };
 
 var ValueStream = function ValueStream(ref) {
-  return FirebaseStream(ref, 'value').pluck('val').shareReplay(1);
+  return FirebaseStream(ref, 'value').map(function (_ref) {
+    var val = _ref.val;
+    return val;
+  }).remember();
 };
 
 var ChildAddedStream = function ChildAddedStream(ref) {
-  return FirebaseStream(ref, 'child_added').share();
+  return FirebaseStream(ref, 'child_added');
 };
 
 // factory takes a FB reference, returns a driver
@@ -40,39 +60,52 @@ var ChildAddedStream = function ChildAddedStream(ref) {
 // sink: consumes a stream of {type,provider} actions where
 //  type: POPUP, REDIRECT, or LOGOUT actions
 //  provider: optional 'google' or 'facebook' for some actions
-var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(ref) {
+var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(auth) {
   var _actionMap;
 
-  var auth$ = _rx.Observable.create(function (obs) {
-    return ref.onAuth(function (auth) {
-      return obs.onNext(auth);
-    });
-  });
-  var scope = 'email';
-
   var actionMap = (_actionMap = {}, _defineProperty(_actionMap, POPUP, function (prov) {
-    return ref.authWithOAuthPopup(prov, function () {}, { scope: scope });
+    return auth.signInWithPopup(prov);
   }), _defineProperty(_actionMap, REDIRECT, function (prov) {
-    return ref.authWithOAuthRedirect(prov, function () {}, { scope: scope });
+    return auth.signInWithRedirect(prov);
   }), _defineProperty(_actionMap, LOGOUT, function (prov) {
-    return ref.unauth(prov);
+    return auth.signOut();
   }), _actionMap);
 
-  return function (input$) {
-    input$.subscribe(function (_ref) {
-      var type = _ref.type;
-      var provider = _ref.provider;
+  auth.onAuthStateChanged(function (info) {
+    console.log('auth state change', info);
+  });
 
-      console.log('auth$ received', type, provider);
-      actionMap[type](provider);
+  function authDriver(input$, runStreamAdapter) {
+    var authStateUnsubscribe = void 0;
+
+    return _xstream2.default.createWithMemory({
+      start: function start(l) {
+        authStateUnsubscribe = auth.onAuthStateChanged(function (user) {
+          return l.next(user);
+        }, function (err) {
+          return l.error(err);
+        });
+
+        input$.addListener({
+          next: function next(_ref2) {
+            var type = _ref2.type;
+            var provider = _ref2.provider;
+            return actionMap[type](provider);
+          },
+          error: function error(err) {
+            return l.error(err);
+          },
+          complete: function complete() {}
+        });
+      },
+      stop: function stop() {
+        return authStateUnsubscribe && authStateUnsubscribe();
+      }
     });
-    var stream = auth$.distinctUntilChanged().replay(null, 1);
-    var disposable = stream.connect();
-    stream.dispose = function () {
-      return disposable.dispose();
-    };
-    return stream;
-  };
+  }
+
+  authDriver.streamAdapter = _xstreamAdapter2.default;
+  return authDriver;
 };
 
 // factory takes a FB reference, returns a driver
@@ -82,12 +115,11 @@ var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(ref) {
 // sinks: none.  to write, see makeQueueDriver
 var makeFirebaseDriver = exports.makeFirebaseDriver = function makeFirebaseDriver(ref) {
   var cache = {};
-  var compositeDisposable = new _rx.CompositeDisposable();
 
   // there are other chainable firebase query buiders, this is wot we need now
-  var query = function query(parentRef, _ref2) {
-    var orderByChild = _ref2.orderByChild;
-    var equalTo = _ref2.equalTo;
+  var query = function query(parentRef, _ref3) {
+    var orderByChild = _ref3.orderByChild;
+    var equalTo = _ref3.equalTo;
 
     var childRef = parentRef;
     if (orderByChild) {
@@ -106,9 +138,7 @@ var makeFirebaseDriver = exports.makeFirebaseDriver = function makeFirebaseDrive
 
   // building query from fb api is simply mapping the args to chained fn calls
   var build = function build(args) {
-    var stream = ValueStream(args.reduce(chain, ref)).replay(null, 1);
-    var disposable = stream.connect();
-    compositeDisposable.add(disposable);
+    var stream = ValueStream(args.reduce(chain, ref));
     return stream;
   };
 
@@ -124,9 +154,6 @@ var makeFirebaseDriver = exports.makeFirebaseDriver = function makeFirebaseDrive
       }
 
       return cacheOrBuild(JSON.stringify(args), args);
-    };
-    fn.dispose = function () {
-      return compositeDisposable.dispose();
     };
     return fn;
   };
@@ -144,21 +171,31 @@ var deleteResponse = function deleteResponse(ref, listenerKey, responseKey) {
 var makeQueueDriver = exports.makeQueueDriver = function makeQueueDriver(ref) {
   var src = arguments.length <= 1 || arguments[1] === undefined ? 'responses' : arguments[1];
   var dest = arguments.length <= 2 || arguments[2] === undefined ? 'tasks' : arguments[2];
-  return function ($input) {
+
+  function queueDriver(input$, runStreamAdapter) {
     var srcRef = ref.child(src);
     var destRef = ref.child(dest);
 
-    $input.doAction(function (x) {
+    var inputDebug$ = input$.debug(function (x) {
       return console.log('queue input', x);
-    }).subscribe(function (item) {
-      return destRef.push(item);
+    });
+
+    inputDebug$.addListener({
+      next: function next(item) {
+        return destRef.push(item);
+      },
+      error: function error() {},
+      complete: function complete() {}
     });
 
     return function (listenerKey) {
-      return ChildAddedStream(srcRef.child(listenerKey)).doAction(function (_ref3) {
-        var key = _ref3.key;
+      return ChildAddedStream(srcRef.child(listenerKey)).debug(function (_ref4) {
+        var key = _ref4.key;
         return deleteResponse(srcRef, listenerKey, key);
       });
     };
-  };
+  }
+
+  queueDriver.streamAdapter = _xstreamAdapter2.default;
+  return queueDriver;
 };
