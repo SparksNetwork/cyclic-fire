@@ -1,6 +1,7 @@
 import xs from 'xstream'
 import dropRepeats from 'xstream/extra/dropRepeats'
 import XStreamAdapter from '@cycle/xstream-adapter'
+import FirebaseAuthMigrator from './migrate'
 
 export const POPUP = 'popup'
 export const REDIRECT = 'redirect'
@@ -28,6 +29,16 @@ const ChildAddedStream = ref => FirebaseStream(ref, 'child_added')
 //  type: POPUP, REDIRECT, or LOGOUT actions
 //  provider: optional 'google' or 'facebook' for some actions
 export const makeAuthDriver = auth => {
+  FirebaseAuthMigrator(auth.app)
+
+  auth.app.authMigrator().migrate().then(user => {
+    if (!user) {
+      return
+    }
+  }).catch(error => {
+    console.log('auth migration error:', error)
+  })
+
   const actionMap = {
     [POPUP]: prov => auth.signInWithPopup(prov),
     [REDIRECT]: prov => auth.signInWithRedirect(prov),
@@ -36,6 +47,10 @@ export const makeAuthDriver = auth => {
 
   auth.onAuthStateChanged(info => {
     console.log('auth state change', info)
+
+    if (info) {
+      auth.app.firebase.authMigrator().clearLegacyAuth()
+    }
   })
 
   function providerObject(name) {

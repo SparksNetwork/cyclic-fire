@@ -19,6 +19,10 @@ var _xstreamAdapter = require('@cycle/xstream-adapter');
 
 var _xstreamAdapter2 = _interopRequireDefault(_xstreamAdapter);
 
+var _migrate = require('./migrate');
+
+var _migrate2 = _interopRequireDefault(_migrate);
+
 function _interopRequireDefault(obj) { return obj && obj.__esModule ? obj : { default: obj }; }
 
 function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
@@ -63,6 +67,16 @@ var ChildAddedStream = function ChildAddedStream(ref) {
 var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(auth) {
   var _actionMap;
 
+  (0, _migrate2.default)(auth.app);
+
+  auth.app.authMigrator().migrate().then(function (user) {
+    if (!user) {
+      return;
+    }
+  }).catch(function (error) {
+    console.log('auth migration error:', error);
+  });
+
   var actionMap = (_actionMap = {}, _defineProperty(_actionMap, POPUP, function (prov) {
     return auth.signInWithPopup(prov);
   }), _defineProperty(_actionMap, REDIRECT, function (prov) {
@@ -73,6 +87,10 @@ var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(auth) {
 
   auth.onAuthStateChanged(function (info) {
     console.log('auth state change', info);
+
+    if (info) {
+      auth.app.firebase.authMigrator().clearLegacyAuth();
+    }
   });
 
   function providerObject(name) {
