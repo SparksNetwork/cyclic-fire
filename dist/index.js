@@ -67,7 +67,7 @@ var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(auth) {
     return auth.signInWithPopup(prov);
   }), _defineProperty(_actionMap, REDIRECT, function (prov) {
     return auth.signInWithRedirect(prov);
-  }), _defineProperty(_actionMap, LOGOUT, function (prov) {
+  }), _defineProperty(_actionMap, LOGOUT, function () {
     return auth.signOut();
   }), _actionMap);
 
@@ -75,7 +75,15 @@ var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(auth) {
     console.log('auth state change', info);
   });
 
-  function authDriver(input$, runStreamAdapter) {
+  function providerObject(name) {
+    if (typeof name === 'string') {
+      var className = name[0].toUpperCase() + name.slice(1) + 'AuthProvider';
+      return auth[className]();
+    }
+    return name;
+  }
+
+  function authDriver(input$) {
     var authStateUnsubscribe = void 0;
 
     return _xstream2.default.createWithMemory({
@@ -86,10 +94,14 @@ var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(auth) {
           return l.error(err);
         });
 
-        input$.addListener({
-          next: function next(_ref2) {
-            var type = _ref2.type;
-            var provider = _ref2.provider;
+        input$.map(function (_ref2) {
+          var type = _ref2.type;
+          var provider = _ref2.provider;
+          return { type: type, provider: providerObject(provider) };
+        }).addListener({
+          next: function next(_ref3) {
+            var type = _ref3.type;
+            var provider = _ref3.provider;
             return actionMap[type](provider);
           },
           error: function error(err) {
@@ -117,9 +129,9 @@ var makeFirebaseDriver = exports.makeFirebaseDriver = function makeFirebaseDrive
   var cache = {};
 
   // there are other chainable firebase query buiders, this is wot we need now
-  var query = function query(parentRef, _ref3) {
-    var orderByChild = _ref3.orderByChild;
-    var equalTo = _ref3.equalTo;
+  var query = function query(parentRef, _ref4) {
+    var orderByChild = _ref4.orderByChild;
+    var equalTo = _ref4.equalTo;
 
     var childRef = parentRef;
     if (orderByChild) {
@@ -172,7 +184,7 @@ var makeQueueDriver = exports.makeQueueDriver = function makeQueueDriver(ref) {
   var src = arguments.length <= 1 || arguments[1] === undefined ? 'responses' : arguments[1];
   var dest = arguments.length <= 2 || arguments[2] === undefined ? 'tasks' : arguments[2];
 
-  function queueDriver(input$, runStreamAdapter) {
+  function queueDriver(input$) {
     var srcRef = ref.child(src);
     var destRef = ref.child(dest);
 
@@ -189,8 +201,8 @@ var makeQueueDriver = exports.makeQueueDriver = function makeQueueDriver(ref) {
     });
 
     return function (listenerKey) {
-      return ChildAddedStream(srcRef.child(listenerKey)).debug(function (_ref4) {
-        var key = _ref4.key;
+      return ChildAddedStream(srcRef.child(listenerKey)).debug(function (_ref5) {
+        var key = _ref5.key;
         return deleteResponse(srcRef, listenerKey, key);
       });
     };

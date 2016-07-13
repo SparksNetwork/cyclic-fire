@@ -31,14 +31,22 @@ export const makeAuthDriver = auth => {
   const actionMap = {
     [POPUP]: prov => auth.signInWithPopup(prov),
     [REDIRECT]: prov => auth.signInWithRedirect(prov),
-    [LOGOUT]: prov => auth.signOut(),
+    [LOGOUT]: () => auth.signOut(),
   }
 
   auth.onAuthStateChanged(info => {
     console.log('auth state change', info)
   })
 
-  function authDriver (input$, runStreamAdapter) {
+  function providerObject(name) {
+    if (typeof name === 'string') {
+      const className = name[0].toUpperCase() + name.slice(1) + 'AuthProvider'
+      return auth[className]()
+    }
+    return name
+  }
+
+  function authDriver(input$) {
     let authStateUnsubscribe
 
     return xs.createWithMemory({
@@ -48,11 +56,15 @@ export const makeAuthDriver = auth => {
           err => l.error(err)
         )
 
-        input$.addListener({
-          next: ({type, provider}) => actionMap[type](provider),
-          error: err => l.error(err),
-          complete: () => {},
-        })
+        input$
+          .map(({type, provider}) =>
+            ({type, provider: providerObject(provider)})
+          )
+          .addListener({
+            next: ({type, provider}) => actionMap[type](provider),
+            error: err => l.error(err),
+            complete: () => {},
+          })
       },
       stop: () => authStateUnsubscribe && authStateUnsubscribe(),
     })
@@ -90,7 +102,7 @@ export const makeFirebaseDriver = ref => {
   // SIDE EFFECT: build and add to cache if not in cache
   const cacheOrBuild = (key, args) => cache[key] || (cache[key] = build(args))
 
-  return function firebaseDriver () {
+  return function firebaseDriver() {
     let fn = (...args) => cacheOrBuild(JSON.stringify(args), args)
     return fn
   }
@@ -106,11 +118,11 @@ const deleteResponse = (ref, listenerKey, responseKey) => {
 // source: a function, called with key, returns stream of new items on that key
 // sink: consumes objects that it pushes to the destination reference
 export const makeQueueDriver = (ref, src = 'responses', dest = 'tasks') => {
-  function queueDriver (input$, runStreamAdapter) {
+  function queueDriver(input$) {
     const srcRef = ref.child(src)
     const destRef = ref.child(dest)
 
-    var inputDebug$ = input$.debug(x => console.log('queue input', x))
+    const inputDebug$ = input$.debug(x => console.log('queue input', x))
 
     inputDebug$.addListener({
       next: item => destRef.push(item),
