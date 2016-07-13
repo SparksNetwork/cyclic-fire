@@ -47,26 +47,28 @@ export const makeAuthDriver = auth => {
   }
 
   function authDriver(input$) {
-    let authStateUnsubscribe
-
     return xs.createWithMemory({
-      start: l => {
-        authStateUnsubscribe = auth.onAuthStateChanged(
+      start: function start(l) {
+        this.authStateUnsubscribe = auth.onAuthStateChanged(
           user => l.next(user),
           err => l.error(err)
         )
 
+        this.listener = {
+          next: ({type, provider}) => actionMap[type](provider),
+          error: err => l.error(err),
+          complete: () => {},
+        }
+
         input$
           .map(({type, provider}) =>
             ({type, provider: providerObject(provider)})
-          )
-          .addListener({
-            next: ({type, provider}) => actionMap[type](provider),
-            error: err => l.error(err),
-            complete: () => {},
-          })
+          ).addListener(this.listener)
       },
-      stop: () => authStateUnsubscribe && authStateUnsubscribe(),
+      stop: function stop() {
+        if (this.authStateUnsubscribe) { this.authStateUnsubscribe() }
+        input$.removeListener(this.listener)
+      },
     })
   }
 

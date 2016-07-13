@@ -84,34 +84,37 @@ var makeAuthDriver = exports.makeAuthDriver = function makeAuthDriver(auth) {
   }
 
   function authDriver(input$) {
-    var authStateUnsubscribe = void 0;
-
     return _xstream2.default.createWithMemory({
       start: function start(l) {
-        authStateUnsubscribe = auth.onAuthStateChanged(function (user) {
+        this.authStateUnsubscribe = auth.onAuthStateChanged(function (user) {
           return l.next(user);
         }, function (err) {
           return l.error(err);
         });
 
-        input$.map(function (_ref2) {
-          var type = _ref2.type;
-          var provider = _ref2.provider;
-          return { type: type, provider: providerObject(provider) };
-        }).addListener({
-          next: function next(_ref3) {
-            var type = _ref3.type;
-            var provider = _ref3.provider;
+        this.listener = {
+          next: function next(_ref2) {
+            var type = _ref2.type;
+            var provider = _ref2.provider;
             return actionMap[type](provider);
           },
           error: function error(err) {
             return l.error(err);
           },
           complete: function complete() {}
-        });
+        };
+
+        input$.map(function (_ref3) {
+          var type = _ref3.type;
+          var provider = _ref3.provider;
+          return { type: type, provider: providerObject(provider) };
+        }).addListener(this.listener);
       },
       stop: function stop() {
-        return authStateUnsubscribe && authStateUnsubscribe();
+        if (this.authStateUnsubscribe) {
+          this.authStateUnsubscribe();
+        }
+        input$.removeListener(this.listener);
       }
     });
   }
