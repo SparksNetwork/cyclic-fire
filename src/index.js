@@ -1,4 +1,4 @@
-import {Observable, CompositeDisposable} from 'rx'
+import { CompositeDisposable, Observable } from "rx"
 
 export const POPUP = 'popup'
 export const REDIRECT = 'redirect'
@@ -6,15 +6,15 @@ export const LOGOUT = 'logout'
 
 // streams used in drivers
 
-const FirebaseStream = (ref,evtName) =>
+const FirebaseStream = (ref, evtName) =>
   Observable.create(obs => ref.on(evtName, (snap) => obs.onNext(snap)))
-    .map(snap => ({key: snap.key, val: snap.val()}))
+    .map(snap => ({ key: snap.key, val: snap.val() }))
     .distinctUntilChanged()
 
-const ValueStream = ref => FirebaseStream(ref,'value').pluck('val')
+const ValueStream = ref => FirebaseStream(ref, 'value').pluck('val')
   .shareReplay(1)
 
-const ChildAddedStream = ref => FirebaseStream(ref,'child_added')
+const ChildAddedStream = ref => FirebaseStream(ref, 'child_added')
   .share()
 
 // factory takes a FB reference, returns a driver
@@ -22,7 +22,7 @@ const ChildAddedStream = ref => FirebaseStream(ref,'child_added')
 // sink: consumes a stream of {type,provider} actions where
 //  type: POPUP, REDIRECT, or LOGOUT actions
 //  provider: optional 'google' or 'facebook' for some actions
-export const makeAuthDriver = firebase => {
+export const makeAuthDriver = (firebase, options) => {
   if (firebase.authMigrator) {
     firebase.authMigrator().migrate().then(user => {
       if (!user) {
@@ -41,20 +41,28 @@ export const makeAuthDriver = firebase => {
   }
 
   /**
-  * Create the auth stream that emits a user.
-  *
-  *  - Listens for getRedirectResult first. If that has a user then it emits
-  *    that user. Otherwise it sets a flag that we've dealt with redirects
-  *
-  *  - Emits the user (or null) from onAuthStateChanged, but only once the
-  *    redirect result is known.
-  */
+   * Create the auth stream that emits a user.
+   *
+   *  - Listens for getRedirectResult first. If that has a user then it emits
+   *    that user. Otherwise it sets a flag that we've dealt with redirects
+   *
+   *  - Emits the user (or null) from onAuthStateChanged, but only once the
+   *    redirect result is known.
+   */
   const auth$ = Observable.create(observer => {
     let hasRedirectResult = false
 
     // This function calls the observer only when hasRedirectResult is true
     const nextUser = user => {
-      if (hasRedirectResult) { observer.onNext(user) }
+      if (hasRedirectResult) {
+        options && options.debug && console.log(`authenticated user :`, {
+          displayName: user && user.displayName,
+          uid: user && user.uid,
+          email: user && user.email,
+          emailVerified: user && user.emailVerified
+        })
+        observer.onNext(user)
+      }
     }
 
     // Add onAuthStateChanged listener
@@ -64,6 +72,10 @@ export const makeAuthDriver = firebase => {
       }
 
       nextUser(user)
+    }, function errorHandler(error) {
+      options && options.debug && console.error(`firebase.auth().onAuthStateChanged fails with error ${error.code}`, error)
+    }, function completeHandler() {
+      options && options.debug && console.info(`firebase.auth().onAuthStateChanged listener is removed`)
     })
 
     // getRedirectResult listener
@@ -75,9 +87,10 @@ export const makeAuthDriver = firebase => {
       }
     })
     // Always set the flag
-    .catch(() => {
-      hasRedirectResult = true
-    })
+      .catch(function (error) {
+        options && options.debug && console.error(`firebase.auth().getRedirectResult fails with error ${error.code}`, error)
+        hasRedirectResult = true
+      })
 
     return unsubscribe
   })
@@ -99,16 +112,16 @@ export const makeAuthDriver = firebase => {
   }
 
   /**
-  * Perform an authentication action. The input should have provider and type,
-  * plus the optional scopes array.
-  *
-  * @param {Object} input
-  * @param {Object|string} input.provider
-  * @param {string} input.type 'popup', 'redirect' or 'logout'
-  * @param {Array<string>} input.scopes a list of OAuth scopes to add to the
-  *   provider
-  * @return {void}
-  */
+   * Perform an authentication action. The input should have provider and type,
+   * plus the optional scopes array.
+   *
+   * @param {Object} input
+   * @param {Object|string} input.provider
+   * @param {string} input.type 'popup', 'redirect' or 'logout'
+   * @param {Array<string>} input.scopes a list of OAuth scopes to add to the
+   *   provider
+   * @return {function}
+   */
   function authAction(input) {
     console.log(input)
     const provider = providerObject(input.provider)
@@ -119,17 +132,20 @@ export const makeAuthDriver = firebase => {
     }
 
     const action = actionMap[input.type]
-    return action(provider)
+    return action(provider);
   }
 
   function authDriver(input$) {
-    const inputSubscription = input$.subscribe(authAction)
+    const inputSubscription = input$.subscribe(authAction, function authErrorHandler(error) {
+      options && options.debug && console.error(`firebase.auth fails with error ${error.code}`, error)
+    })
 
     let stream = auth$.distinctUntilChanged().replay(null, 1)
     const disposable = stream.connect()
     stream.dispose = () => {
       disposable.dispose()
       inputSubscription.dispose()
+      options && options.debug && console.info(`disposing auth subscription`)
     }
     return stream
   }
@@ -142,12 +158,12 @@ export const makeAuthDriver = firebase => {
 //  each object is used to build a fb query (eg orderByChild, equalTo, etc)
 //  anything else is treated as a FB key with a chained call to .child
 // sinks: none.  to write, see makeQueueDriver
-export const makeFirebaseDriver = ref => {
+export const makeFirebaseDriver = (ref, options) => {
   const cache = {}
   const compositeDisposable = new CompositeDisposable()
 
   // there are other chainable firebase query buiders, this is wot we need now
-  const query = (parentRef,{orderByChild,equalTo}) => {
+  const query = (parentRef, { orderByChild, equalTo }) => {
     let childRef = parentRef
     if (orderByChild) { childRef = childRef.orderByChild(orderByChild) }
     if (equalTo) { childRef = childRef.equalTo(equalTo) }
@@ -155,28 +171,32 @@ export const makeFirebaseDriver = ref => {
   }
 
   // used to build fb ref, each value passed is either child or k:v query def
-  const chain = (a,v) => typeof v === 'object' && query(a,v) || a.child(v)
+  const chain = (a, v) => typeof v === 'object' && query(a, v) || a.child(v)
 
   // building query from fb api is simply mapping the args to chained fn calls
   const build = (args) => {
-    const stream = ValueStream(args.reduce(chain,ref)).replay(null, 1)
+    const stream = ValueStream(args.reduce(chain, ref))
+      .tap(function (x) {
+        options && options.debug && console.log(`firebase query ${args.join('/')}`, x)
+      })
+      .replay(null, 1)
     const disposable = stream.connect()
     compositeDisposable.add(disposable)
     return stream
   }
 
   // SIDE EFFECT: build and add to cache if not in cache
-  const cacheOrBuild = (key,args) => cache[key] || (cache[key] = build(args))
+  const cacheOrBuild = (key, args) => cache[key] || (cache[key] = build(args))
 
   return function firebaseDriver() {
-    let fn = (...args) => cacheOrBuild(JSON.stringify(args),args)
+    let fn = (...args) => cacheOrBuild(JSON.stringify(args), args)
     fn.dispose = () => compositeDisposable.dispose()
     return fn
   }
 }
 
 const deleteResponse = (ref, listenerKey, responseKey) => {
-  console.log('removing',ref.key,listenerKey,responseKey)
+  console.log('removing', ref.key, listenerKey, responseKey)
   ref.child(listenerKey).child(responseKey).remove()
 }
 
@@ -184,16 +204,20 @@ const deleteResponse = (ref, listenerKey, responseKey) => {
 // factory takes FB ref, plus path names for src and dest locs, returns driver
 // source: a function, called with key, returns stream of new items on that key
 // sink: consumes objects that it pushes to the destination reference
-export const makeQueueDriver = (ref, src = 'responses', dest = 'tasks') =>
+export const makeQueueDriver = (ref, src = 'responses', dest = 'tasks', options) =>
   $input => {
     const srcRef = ref.child(src)
     const destRef = ref.child(dest)
 
     $input
-      .doAction(x => console.log('queue input',x))
+      .doAction(x => console.log('queue input', x))
       .subscribe(item => destRef.push(item))
 
     return listenerKey =>
       ChildAddedStream(srcRef.child(listenerKey))
-        .doAction(({key}) => deleteResponse(srcRef,listenerKey,key))
+        .tap(function(x){
+          options && options.debug &&
+          console.log(`Response received for listenerKey (uid?) : ${listenerKey}`, x)
+        })
+        .doAction(({ key }) => deleteResponse(srcRef, listenerKey, key))
   }
